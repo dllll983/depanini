@@ -1,0 +1,48 @@
+name: Créer la clé de signature (une seule fois)
+
+# Génère la clé Android qui signe DÉPANINI et DÉPANINI Pro, la chiffre avec le
+# secret ANDROID_KEY_PASSWORD et l'enregistre dans le dépôt (fichier chiffré uniquement).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifications
+        run: |
+          if [ -z "$ANDROID_KEY_PASSWORD" ]; then echo "::error::Secret ANDROID_KEY_PASSWORD manquant"; exit 1; fi
+          if [ ${#ANDROID_KEY_PASSWORD} -lt 12 ]; then echo "::error::Mot de passe trop court (12 caractères minimum)"; exit 1; fi
+          if [ -f android-signing/depanini.jks.enc ]; then echo "::error::Une clé existe déjà : on ne la remplace jamais"; exit 1; fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Générer et chiffrer la clé
+        run: |
+          mkdir -p android-signing
+          keytool -genkeypair -v -storetype PKCS12 -keystore "$RUNNER_TEMP/depanini.jks" \
+            -alias depanini -keyalg RSA -keysize 4096 -validity 10000 \
+            -storepass:env ANDROID_KEY_PASSWORD -keypass:env ANDROID_KEY_PASSWORD \
+            -dname "CN=DEPANINI, O=DEPANINI, L=Oran, C=DZ"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 300000 -salt \
+            -in "$RUNNER_TEMP/depanini.jks" -out android-signing/depanini.jks.enc -pass env:ANDROID_KEY_PASSWORD
+          keytool -list -keystore "$RUNNER_TEMP/depanini.jks" -storepass:env ANDROID_KEY_PASSWORD | grep -i "SHA" > android-signing/empreinte.txt || true
+          rm -f "$RUNNER_TEMP/depanini.jks"
+
+      - name: Enregistrer dans le dépôt
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android-signing
+          git commit -m "Clé de signature Android (chiffrée)"
+          git push

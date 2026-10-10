@@ -62,6 +62,45 @@ w = pathlib.Path(out, 'android/gradle/wrapper/gradle-wrapper.properties')
 w.write_text(re.sub(r'distributionUrl=.*', r'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-all.zip',
                     w.read_text(encoding='utf-8')), encoding='utf-8')
 
+# Signature fixe (clé DÉPANINI) si la clé déchiffrée est disponible
+import os
+if os.environ.get('ANDROID_KEYSTORE_PATH'):
+    groovy = pathlib.Path(out, 'android/app/build.gradle')
+    kts = pathlib.Path(out, 'android/app/build.gradle.kts')
+    if kts.exists():
+        g = kts.read_text(encoding='utf-8')
+        block = '''    signingConfigs {
+        create("release") {
+            storeFile = file(System.getenv("ANDROID_KEYSTORE_PATH"))
+            storePassword = System.getenv("ANDROID_KEY_PASSWORD")
+            keyAlias = "depanini"
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {'''
+        g = g.replace('    buildTypes {', block, 1)
+        g = g.replace('signingConfig = signingConfigs.getByName("debug")', 'signingConfig = signingConfigs.getByName("release")')
+        kts.write_text(g, encoding='utf-8')
+    else:
+        g = groovy.read_text(encoding='utf-8')
+        block = '''    signingConfigs {
+        release {
+            storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))
+            storePassword System.getenv("ANDROID_KEY_PASSWORD")
+            keyAlias "depanini"
+            keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {'''
+        g = g.replace('    buildTypes {', block, 1)
+        g = re.sub(r'signingConfig\s*=?\s*signingConfigs\.debug', 'signingConfig = signingConfigs.release', g)
+        groovy.write_text(g, encoding='utf-8')
+    if 'signingConfigs.release' not in g and 'getByName("release")' not in g:
+        raise SystemExit('Signature : impossible de modifier build.gradle')
+    print('signature fixe activée')
+
 p = pathlib.Path(out, 'ios/Runner/Info.plist')
 y = p.read_text(encoding='utf-8')
 y = re.sub(r'(<key>CFBundleDisplayName</key>\s*<string>)[^<]*(</string>)', rf'\g<1>{label}\g<2>', y)

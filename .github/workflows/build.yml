@@ -29,6 +29,8 @@ jobs:
             label: "DÉPANINI"
           - variant: pro
             label: "DÉPANINI Pro"
+    env:
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +38,17 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Clé de signature
+        run: |
+          if [ -f android-signing/depanini.jks.enc ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 300000 -in android-signing/depanini.jks.enc \
+              -out "$RUNNER_TEMP/depanini.jks" -pass env:ANDROID_KEY_PASSWORD
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/depanini.jks" >> "$GITHUB_ENV"
+            echo "::notice::APK signés avec la clé DÉPANINI"
+          else
+            echo "::warning::Clé de signature absente : APK signés avec une clé temporaire"
+          fi
 
       - uses: subosito/flutter-action@v2
         with:
