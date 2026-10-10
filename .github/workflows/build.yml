@@ -1,0 +1,84 @@
+name: Compiler les APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: APK ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: client
+            label: "DÉPANINI"
+          - variant: pro
+            label: "DÉPANINI Pro"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.27.4
+          cache: true
+
+      - name: Préparer le projet Android/iOS
+        run: bash tool/prepare_platform.sh ${{ matrix.variant }} "${{ matrix.label }}"
+
+      - name: Compiler l'APK
+        working-directory: build_apps/${{ matrix.variant }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          flutter pub get
+          flutter build apk --release \
+            -t lib/main_${{ matrix.variant }}.dart \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+          cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/depanini-${{ matrix.variant }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: depanini-${{ matrix.variant }}
+          path: depanini-${{ matrix.variant }}.apk
+
+  release:
+    name: Publier les APK
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: apks
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: DÉPANINI — version ${{ github.run_number }}
+          body: |
+            Téléchargez sur votre téléphone Android :
+            - **depanini-client.apk** : application clients
+            - **depanini-pro.apk** : application prestataires
+
+            Sans serveur configuré, les applications fonctionnent en mode démo.
+          files: apks/*.apk
+          make_latest: true

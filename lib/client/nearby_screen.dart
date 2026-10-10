@@ -175,7 +175,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
             ),
           ),
         ]),
-        const RichAttributionWidget(attributions: [TextSourceAttribution('© OpenStreetMap')]),
+        RichAttributionWidget(attributions: [TextSourceAttribution('© OpenStreetMap')]),
       ],
     );
   }

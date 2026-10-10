@@ -265,6 +265,16 @@ language sql stable security definer as $$
      and auth.uid() in (r.client_id, r.provider_id);
 $$;
 
+-- Position du client, révélée au prestataire seulement après acceptation
+create or replace function request_pickup(p_request uuid)
+returns table (lat double precision, lng double precision)
+language sql stable security definer as $$
+  select st_y(r.pickup::geometry), st_x(r.pickup::geometry)
+    from requests r
+   where r.id = p_request and r.provider_id = auth.uid()
+     and r.status in ('accepted','en_route','on_site');
+$$;
+
 -- Buckets de stockage privés : documents prestataires et reçus de virement ; 'ads' public
 insert into storage.buckets (id, name, public) values
   ('documents', 'documents', false), ('receipts', 'receipts', false), ('ads', 'ads', true)
