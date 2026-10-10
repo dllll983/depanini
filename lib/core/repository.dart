@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -23,6 +24,9 @@ class Repository {
   Repository._();
   static final Repository instance = Repository._();
 
+  /// Incrémenté quand la fiche prestataire change (profil enregistré) : le tableau de bord se recharge.
+  final providerVersion = ValueNotifier<int>(0);
+
   // ------------------------------------------------------------------ CLIENT
 
   Future<List<NearbyProvider>> nearby({
@@ -33,8 +37,8 @@ class Repository {
   }) async {
     if (AppConfig.isDemo) return _demo.providers(me, axis, maxKm);
     final rows = await db.rpc('nearby_providers', params: {
-      'lat': me.latitude,
-      'lng': me.longitude,
+      'p_lat': me.latitude,
+      'p_lng': me.longitude,
       'p_axis': axis,
       'p_category': category,
       'max_km': maxKm,
@@ -174,6 +178,12 @@ class Repository {
   Future<void> pushPosition(String requestId, LatLng p) async {
     if (AppConfig.isDemo) return;
     await db.from('request_tracking').insert({'request_id': requestId, 'lat': p.latitude, 'lng': p.longitude});
+  }
+
+  /// Fiche prestataire de l'utilisateur connecté (null si pas encore créée).
+  Future<Map<String, dynamic>?> myProvider() async {
+    if (AppConfig.isDemo) return {'business_name': 'Karim B. Dépannage', 'status': 'verified'};
+    return db.from('providers').select().eq('id', db.auth.currentUser!.id).maybeSingle();
   }
 
   Future<DateTime?> subscriptionUntil() async {

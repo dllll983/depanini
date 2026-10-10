@@ -1,54 +1,55 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show AuthException;
 
 import '../core/repository.dart';
 import '../core/theme.dart';
 
-/// Connexion par numéro de téléphone + code SMS (OTP). Aucun mot de passe.
+/// Inscription en une étape : nom + téléphone + consentement.
+/// Phase pilote : connexion « anonyme » Supabase (pas de SMS à payer).
+/// Production : remplacer par la vérification du numéro par SMS (OTP) via une passerelle opérateur.
 class LoginScreen extends StatefulWidget {
   final bool isPro;
-  const LoginScreen({super.key, required this.isPro});
+  final VoidCallback onDone;
+  const LoginScreen({super.key, required this.isPro, required this.onDone});
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  final _name = TextEditingController();
   final _phone = TextEditingController();
-  final _code = TextEditingController();
-  bool _codeSent = false, _busy = false;
-  bool _accepted = false;
+  bool _accepted = false, _busy = false;
   String? _error;
 
-  /// 0550 12 34 56 → +213550123456
-  String get _e164 {
-    final digits = _phone.text.replaceAll(RegExp(r'\D'), '');
-    final local = digits.startsWith('213') ? digits.substring(3) : digits.replaceFirst(RegExp(r'^0'), '');
-    return '+213$local';
+  /// 0550 12 34 56 → 0550123456
+  String get _cleanPhone {
+    var d = _phone.text.replaceAll(RegExp(r'\D'), '');
+    if (d.startsWith('213')) d = '0${d.substring(3)}';
+    if (!d.startsWith('0')) d = '0$d';
+    return d;
   }
 
-  Future<void> _run(Future<void> Function() action) async {
+  bool get _valid => _name.text.trim().length >= 2 && RegExp(r'^0[5-7]\d{8}$').hasMatch(_cleanPhone) && _accepted;
+
+  Future<void> _start() async {
     setState(() { _busy = true; _error = null; });
     try {
-      await action();
+      if (db.auth.currentSession == null) await db.auth.signInAnonymously();
+      await db.from('profiles').upsert({
+        'id': db.auth.currentUser!.id,
+        'full_name': _name.text.trim(),
+        'phone': _cleanPhone,
+        'role': widget.isPro ? 'provider' : 'client',
+      });
+      widget.onDone();
     } on AuthException catch (e) {
-      setState(() => _error = e.message);
+      if (mounted) setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Erreur : $e');
+      if (mounted) setState(() => _error = 'Connexion impossible : $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
-
-  Future<void> _sendCode() => _run(() async {
-        await db.auth.signInWithOtp(phone: _e164);
-        setState(() => _codeSent = true);
-      });
-
-  Future<void> _verify() => _run(() async {
-        await db.auth.verifyOTP(phone: _e164, token: _code.text.trim(), type: OtpType.sms);
-        final uid = db.auth.currentUser!.id;
-        await db.from('profiles').upsert({'id': uid, 'phone': _e164, 'role': widget.isPro ? 'provider' : 'client'});
-      });
 
   @override
   Widget build(BuildContext context) {
@@ -62,49 +63,49 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 8),
             Text(widget.isPro ? 'Plus de clients. 0 % de commission.' : 'En panne ? On arrive.',
                 style: const TextStyle(color: Colors.white70, fontSize: 16)),
-            const SizedBox(height: 40),
+            const SizedBox(height: 36),
             Panel(
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Text(_codeSent ? 'Code reçu par SMS' : 'Votre numéro de téléphone',
-                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                Text(widget.isPro ? 'Créer mon espace prestataire' : 'Bienvenue',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _name,
+                  textCapitalization: TextCapitalization.words,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(labelText: widget.isPro ? 'Nom du responsable' : 'Votre prénom et nom'),
+                ),
                 const SizedBox(height: 12),
-                if (!_codeSent)
-                  TextField(
-                    controller: _phone,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(prefixText: '+213 ', hintText: '550 12 34 56'),
-                  )
-                else
-                  TextField(
-                    controller: _code,
-                    keyboardType: TextInputType.number,
-                    maxLength: 6,
-                    decoration: const InputDecoration(hintText: '6 chiffres'),
+                TextField(
+                  controller: _phone,
+                  keyboardType: TextInputType.phone,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    labelText: 'Téléphone',
+                    hintText: '0550 12 34 56',
+                    helperText: 'Communiqué uniquement au prestataire ou client de votre mission',
                   ),
-                if (!_codeSent)
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    value: _accepted,
-                    onChanged: (v) => setState(() => _accepted = v ?? false),
-                    title: const Text(
-                      "J'accepte les conditions d'utilisation et la politique de confidentialité "
-                      '(loi 18-07). Ma position n\'est partagée qu\'avec le prestataire choisi.',
-                      style: TextStyle(fontSize: 12),
-                    ),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _accepted,
+                  onChanged: (v) => setState(() => _accepted = v ?? false),
+                  title: const Text(
+                    "J'accepte les conditions d'utilisation et la politique de confidentialité (loi 18-07). "
+                    "Ma position n'est partagée qu'avec le prestataire ou le client de ma mission.",
+                    style: TextStyle(fontSize: 12),
                   ),
+                ),
                 if (_error != null)
                   Padding(
-                    padding: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.only(bottom: 8),
                     child: Text(_error!, style: const TextStyle(color: Brand.redDark)),
                   ),
-                const SizedBox(height: 12),
                 FilledButton(
-                  onPressed: _busy || (!_codeSent && !_accepted) ? null : (_codeSent ? _verify : _sendCode),
-                  child: Text(_busy ? 'Patientez…' : (_codeSent ? 'Valider' : 'Recevoir le code')),
+                  onPressed: _busy || !_valid ? null : _start,
+                  child: Text(_busy ? 'Patientez…' : 'Commencer'),
                 ),
-                if (_codeSent)
-                  TextButton(onPressed: () => setState(() => _codeSent = false), child: const Text('Changer de numéro')),
               ]),
             ),
           ],

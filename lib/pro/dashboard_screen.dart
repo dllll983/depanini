@@ -24,20 +24,31 @@ class _ProDashboardScreenState extends State<ProDashboardScreen> {
   Timer? _poll;
   List<IncomingRequest> _incoming = const [];
   DateTime? _subUntil;
+  bool _hasProfile = true;
   int _missions = 0;
 
   @override
   void initState() {
     super.initState();
-    _repo.subscriptionUntil().then((d) {
-      if (mounted) setState(() => _subUntil = d);
-    }).catchError((_) {});
+    _reload();
+    _repo.providerVersion.addListener(_reload);
+  }
+
+  /// Recharge la fiche prestataire (profil créé ? abonnement valable ?).
+  Future<void> _reload() async {
+    try {
+      final p = await _repo.myProvider();
+      final until = await _repo.subscriptionUntil();
+      if (mounted) setState(() { _hasProfile = p != null; _subUntil = until; });
+    } catch (_) {}
   }
 
   Future<void> _toggle(bool value) async {
     setState(() => _busy = true);
     try {
       if (value) {
+        await _reload();
+        if (!_hasProfile) throw 'Complétez d\'abord votre profil (onglet Profil).';
         final p = await LocationService.current();
         await _repo.setOnline(true, at: p);
         _posSub = LocationService.stream().listen((pos) => _repo.setOnline(true, at: pos));
@@ -74,6 +85,7 @@ class _ProDashboardScreenState extends State<ProDashboardScreen> {
 
   @override
   void dispose() {
+    _repo.providerVersion.removeListener(_reload);
     _posSub?.cancel();
     _poll?.cancel();
     super.dispose();
@@ -99,7 +111,22 @@ class _ProDashboardScreenState extends State<ProDashboardScreen> {
           ),
         ],
       ),
-      body: ListView(padding: const EdgeInsets.all(20), children: [
+      body: RefreshIndicator(
+        onRefresh: _reload,
+        child: ListView(padding: const EdgeInsets.all(20), physics: const AlwaysScrollableScrollPhysics(), children: [
+        if (!_hasProfile)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Panel(
+              color: const Color(0xFFFFF8E1),
+              border: Border.all(color: Brand.yellow, width: 1.5),
+              child: const Text(
+                'Bienvenue ! Complétez votre profil (onglet Profil) : votre premier mois est offert. '
+                'Tirez ensuite cet écran vers le bas pour actualiser.',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
         Panel(
           color: _online ? Brand.black : Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -107,7 +134,7 @@ class _ProDashboardScreenState extends State<ProDashboardScreen> {
             value: _online,
             activeColor: Colors.white,
             activeTrackColor: Brand.green,
-            onChanged: _busy || !subActive ? null : _toggle,
+            onChanged: _busy || (!subActive && _hasProfile) ? null : _toggle,
             title: Text(_online ? 'Vous êtes en ligne' : 'Vous êtes hors ligne',
                 style: TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: _online ? Colors.white : Brand.black)),
             subtitle: Text(
@@ -165,7 +192,8 @@ class _ProDashboardScreenState extends State<ProDashboardScreen> {
           ),
         const SizedBox(height: 20),
         const AdSlot(surface: 'pro', slot: 'pro_dashboard', dark: true, placeholder: 'Pneus, pièces : tarif pro'),
-      ]),
+        ]),
+      ),
     );
   }
 }

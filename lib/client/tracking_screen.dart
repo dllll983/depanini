@@ -44,10 +44,19 @@ class _TrackingScreenState extends State<TrackingScreen> {
     _posSub = Repository.instance.tracking(widget.requestId).listen((p) {
       if (mounted) setState(() => _providerPos = p);
     });
+    // Sans réponse du prestataire en 90 s, la demande est annulée pour en choisir un autre.
+    _timeout = Timer(const Duration(seconds: 90), () async {
+      if (_status != 'sent') return;
+      await Repository.instance.cancelRequest(widget.requestId);
+      if (mounted) setState(() => _status = 'expired');
+    });
   }
+
+  Timer? _timeout;
 
   @override
   void dispose() {
+    _timeout?.cancel();
     _statusSub?.cancel();
     _posSub?.cancel();
     super.dispose();

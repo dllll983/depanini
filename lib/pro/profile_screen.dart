@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../core/config.dart';
+import '../core/models.dart';
 import '../core/repository.dart';
 import '../core/theme.dart';
 
@@ -18,9 +19,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _plate = TextEditingController();
   final _base = TextEditingController(text: AppConfig.isDemo ? '2500' : '');
   final _perKm = TextEditingController(text: AppConfig.isDemo ? '100' : '');
+  final _wilaya = TextEditingController(text: 'Oran');
   String _axis = 'depannage';
   int _radius = 20;
   bool _saving = false;
+  bool _saved = AppConfig.isDemo;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  /// Pré-remplit le formulaire si la fiche existe déjà.
+  Future<void> _load() async {
+    if (AppConfig.isDemo) return;
+    try {
+      final p = await Repository.instance.myProvider();
+      if (p == null || !mounted) return;
+      setState(() {
+        _saved = true;
+        _name.text = (p['business_name'] as String?) ?? '';
+        _vehicle.text = (p['vehicle_desc'] as String?) ?? '';
+        _plate.text = (p['plate'] as String?) ?? '';
+        _wilaya.text = (p['wilaya'] as String?) ?? 'Oran';
+        _base.text = p['base_price_da']?.toString() ?? '';
+        _perKm.text = p['price_per_km_da']?.toString() ?? '';
+        _axis = (p['axis'] as String?) ?? 'depannage';
+        _radius = (p['radius_km'] as num?)?.toInt() ?? 20;
+      });
+    } catch (_) {}
+  }
 
   static const _docs = {
     'registre_commerce': 'Registre de commerce ou carte d\'artisan',
@@ -34,6 +63,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _upload(String type) async {
     final file = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: 70, maxWidth: 1600);
     if (file == null) return;
+    if (!_saved) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Enregistrez d'abord votre profil.")));
+      }
+      return;
+    }
     if (!AppConfig.isDemo) {
       final uid = db.auth.currentUser!.id;
       final path = '$uid/$type-${DateTime.now().millisecondsSinceEpoch}.jpg';
@@ -44,15 +79,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _save() async {
+    if (_name.text.trim().length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Indiquez votre nom commercial.')));
+      return;
+    }
     setState(() => _saving = true);
     try {
       if (!AppConfig.isDemo) {
+        final cats = (_axis == 'ambulance' ? ambulanceCategories : depannageCategories).map((c) => c.id).toList();
         await db.from('providers').upsert({
           'id': db.auth.currentUser!.id,
           'business_name': _name.text.trim(),
           'axis': _axis,
-          'categories': _axis == 'ambulance' ? ['ambulance_allonge', 'ambulance_assis'] : ['remorquage', 'depannage_place'],
-          'wilaya': 'Oran',
+          'categories': cats,
+          'wilaya': _wilaya.text.trim().isEmpty ? 'Oran' : _wilaya.text.trim(),
           'radius_km': _radius,
           'vehicle_desc': _vehicle.text.trim(),
           'plate': _plate.text.trim(),
@@ -60,7 +100,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'price_per_km_da': int.tryParse(_perKm.text),
         });
       }
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profil enregistré.')));
+      _saved = true;
+      Repository.instance.providerVersion.value++;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profil enregistré. Retournez sur Accueil et passez En ligne.')),
+        );
+      }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur : $e')));
     } finally {
@@ -94,6 +140,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             TextField(controller: _vehicle, decoration: const InputDecoration(labelText: 'Véhicule (ex. Plateau 5 t)')),
             const SizedBox(height: 10),
             TextField(controller: _plate, decoration: const InputDecoration(labelText: 'Immatriculation')),
+            const SizedBox(height: 10),
+            TextField(controller: _wilaya, decoration: const InputDecoration(labelText: 'Wilaya')),
             const SizedBox(height: 10),
             Row(children: [
               Expanded(
