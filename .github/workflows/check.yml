@@ -1,0 +1,27 @@
+name: Vérifier le serveur
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - name: Lecture des catégories (URL + clé)
+        run: |
+          code=$(curl -s -o out.json -w "%{http_code}" "$SUPABASE_URL/rest/v1/categories?select=id" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "HTTP $code"; head -c 300 out.json; echo
+          n=$(python3 -c "import json; print(len(json.load(open('out.json'))))" 2>/dev/null || echo 0)
+          if [ "$code" != "200" ] || [ "$n" -lt 7 ]; then echo "::error::URL ou clé anon incorrecte (HTTP $code, $n catégories)"; exit 1; fi
+          echo "::notice::Connexion OK : $n catégories lues"
+      - name: Connexion anonyme activée
+        run: |
+          code=$(curl -s -o out.json -w "%{http_code}" -X POST "$SUPABASE_URL/auth/v1/signup" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" -d '{}')
+          echo "HTTP $code"; python3 -c "import json; d=json.load(open('out.json')); print({k: d.get(k) for k in ('error_code','msg','message')})" || true
+          if [ "$code" != "200" ]; then echo "::error::Activez « Allow anonymous sign-ins » dans Supabase (Authentication > Sign In / Providers)"; exit 1; fi
+          echo "::notice::Connexion anonyme OK"
