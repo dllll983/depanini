@@ -1,0 +1,43 @@
+name: Base de données
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+      - ".github/workflows/database.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: database
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Vérifier puis installer la base
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # 1. Essai complet sur une base Supabase locale (jetable) : aucune erreur ne part en production
+      - name: Tester les migrations sur une base locale
+        run: |
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector
+          supabase db reset
+          supabase stop --no-backup
+
+      # 2. Installation sur votre projet Supabase (seulement les migrations pas encore appliquées)
+      - name: Installer sur Supabase
+        if: env.SUPABASE_DB_URL != ''
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all --yes
+
+      - name: Secret manquant
+        if: env.SUPABASE_DB_URL == ''
+        run: echo "::warning::Ajoutez le secret SUPABASE_DB_URL pour installer la base sur votre projet."

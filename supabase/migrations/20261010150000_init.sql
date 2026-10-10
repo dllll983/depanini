@@ -1,6 +1,6 @@
 -- =====================================================================
 -- DÉPANINI — schéma Supabase / PostgreSQL + PostGIS
--- Exécuter dans l'éditeur SQL de Supabase (ou `supabase db reset`).
+-- Appliqué automatiquement par GitHub Actions (workflow « Base de données »).
 -- =====================================================================
 
 create extension if not exists postgis;
@@ -137,7 +137,6 @@ create table request_tracking (
   request_id  uuid not null references requests(id) on delete cascade,
   lat         double precision not null,     -- lisible directement par l'app (flux temps réel)
   lng         double precision not null,
-  location    geography(point, 4326) generated always as (st_makepoint(lng, lat)::geography) stored,
   recorded_at timestamptz not null default now()
 );
 
@@ -170,22 +169,22 @@ create table ads (
 -- Recherche des prestataires les plus proches
 -- =====================================================================
 create or replace function nearby_providers(
-  lat double precision, lng double precision,
+  p_lat double precision, p_lng double precision,
   p_axis service_axis, p_category text default null, max_km int default 30
 ) returns table (
   id uuid, business_name text, vehicle_desc text, distance_km numeric,
   rating_avg numeric, rating_count int, base_price_da int, lat double precision, lng double precision
 ) language sql stable security definer as $$
   select p.id, p.business_name, p.vehicle_desc,
-         round((st_distance(p.location, st_makepoint(lng, lat)::geography) / 1000)::numeric, 1),
+         round((st_distance(p.location, st_setsrid(st_makepoint(p_lng, p_lat), 4326)::geography) / 1000)::numeric, 1),
          p.rating_avg, p.rating_count, p.base_price_da,
          st_y(p.location::geometry), st_x(p.location::geometry)
     from providers p
    where p.axis = p_axis
      and (p_category is null or p_category = any(p.categories))
      and provider_is_visible(p)
-     and st_dwithin(p.location, st_makepoint(lng, lat)::geography, least(max_km, p.radius_km) * 1000)
-   order by p.location <-> st_makepoint(lng, lat)::geography
+     and st_dwithin(p.location, st_setsrid(st_makepoint(p_lng, p_lat), 4326)::geography, least(max_km, p.radius_km) * 1000)
+   order by p.location <-> st_setsrid(st_makepoint(p_lng, p_lat), 4326)::geography
    limit 30;
 $$;
 
@@ -238,7 +237,8 @@ create policy "suivi: prestataire écrit" on request_tracking for insert with ch
 
 create policy "avis lisibles"           on reviews for select using (true);
 create policy "avis: client"            on reviews for insert with check (
-  client_id = auth.uid() and exists (select 1 from requests r where r.id = request_id and r.client_id = auth.uid() and r.status = 'done'));
+  client_id = auth.uid() and exists (select 1 from requests r where r.id = request_id and r.client_id = auth.uid()
+                                     and r.provider_id = reviews.provider_id and r.status = 'done'));
 
 create policy "pubs actives lisibles"   on ads for select using (current_date between starts_on and ends_on or is_admin());
 create policy "pubs: admin"             on ads for all using (is_admin()) with check (is_admin());
@@ -286,3 +286,93 @@ create policy "fichiers: dossier perso" on storage.objects for all
 
 -- Temps réel
 alter publication supabase_realtime add table requests, request_tracking;
+
+-- =====================================================================
+-- Règles de sécurité supplémentaires
+-- =====================================================================
+
+-- Réglages de la plateforme (modifiables depuis l'éditeur SQL de Supabase)
+create table app_settings (
+  id                    int primary key default 1 check (id = 1),
+  auto_verify_providers boolean not null default true,  -- pilote : prestataires visibles sans contrôle manuel
+  free_trial_days       int     not null default 30     -- premier mois offert
+);
+insert into app_settings default values;
+alter table app_settings enable row level security;
+
+-- Nouveau prestataire : statut et mois offert fixés par la plateforme, jamais par l'app
+create or replace function on_provider_insert() returns trigger
+language plpgsql security definer as $$
+declare s app_settings;
+begin
+  select * into s from app_settings where id = 1;
+  new.status := case when s.auto_verify_providers then 'verified'::provider_status else 'pending'::provider_status end;
+  new.subscription_until := current_date + s.free_trial_days;
+  new.rating_avg := 0;
+  new.rating_count := 0;
+  return new;
+end $$;
+create trigger providers_before_insert before insert on providers
+  for each row when (current_user in ('authenticated', 'anon'))
+  execute function on_provider_insert();
+
+-- Les apps ne modifient que les colonnes autorisées (ni statut, ni abonnement, ni notes)
+revoke insert, update on providers from anon, authenticated;
+grant insert (id, business_name, axis, categories, wilaya, radius_km, location, is_online,
+              base_price_da, price_per_km_da, vehicle_desc, plate, updated_at) on providers to authenticated;
+grant update (id, business_name, axis, categories, wilaya, radius_km, location, is_online,
+              base_price_da, price_per_km_da, vehicle_desc, plate, updated_at) on providers to authenticated;
+
+-- Personne ne peut se déclarer administrateur depuis l'application
+create or replace function guard_profile_role() returns trigger
+language plpgsql as $$
+begin
+  if current_user in ('authenticated', 'anon') and new.role = 'admin'
+     and (tg_op = 'INSERT' or old.role <> 'admin') then
+    raise exception 'rôle non autorisé';
+  end if;
+  return new;
+end $$;
+create trigger profiles_guard_role before insert or update on profiles
+  for each row execute function guard_profile_role();
+
+-- Demandes : le client crée « sent » et peut seulement annuler ; le prestataire fait avancer la mission
+create or replace function guard_request() returns trigger
+language plpgsql as $$
+begin
+  if current_user in ('authenticated', 'anon') then
+    if tg_op = 'INSERT' then
+      new.status := 'sent';
+    elsif auth.uid() = old.provider_id then
+      if new.status <> old.status and new.status not in ('en_route', 'on_site', 'done', 'cancelled') then
+        raise exception 'statut non autorisé';
+      end if;
+      new.client_id := old.client_id;
+      new.provider_id := old.provider_id;
+      new.pickup := old.pickup;
+    else
+      if new.status <> old.status and new.status <> 'cancelled' then
+        raise exception 'statut non autorisé';
+      end if;
+      new.provider_id := old.provider_id;
+    end if;
+  end if;
+  new.updated_at := now();
+  return new;
+end $$;
+create trigger requests_guard before insert or update on requests
+  for each row execute function guard_request();
+
+-- Note moyenne recalculée à chaque avis
+create or replace function on_review_insert() returns trigger
+language plpgsql security definer as $$
+begin
+  update providers p
+     set rating_count = s.c, rating_avg = s.a
+    from (select count(*)::int c, round(avg(stars)::numeric, 1) a
+            from reviews where provider_id = new.provider_id) s
+   where p.id = new.provider_id;
+  return new;
+end $$;
+create trigger reviews_after_insert after insert on reviews
+  for each row execute function on_review_insert();

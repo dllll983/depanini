@@ -3,6 +3,10 @@ name: Compiler les APK
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "supabase/**"
+      - ".github/workflows/database.yml"
+      - "**.md"
   workflow_dispatch:
 
 permissions:
